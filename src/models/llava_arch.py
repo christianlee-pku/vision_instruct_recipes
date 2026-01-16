@@ -46,49 +46,32 @@ class LlavaConfig(LlamaConfig):
         super().__init__(**kwargs)
 
 # ============================================================================
-# Inner Model: LLM Backbone + Vision Tower + Projector
-# ============================================================================
-class LlavaLlamaModel(LlamaModel):
-    """
-    Core LLaVA model that extends LlamaModel with a Vision Tower and Projector.
-    """
-    def __init__(self, config: LlavaConfig):
-        super(LlavaLlamaModel, self).__init__(config)
-        
-        # Initialize multi-modal components
-        self.vision_tower = None
-        if hasattr(config, "vision_tower") and config.vision_tower:
-            self.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=False, args=config)
-            
-        self.mm_projector = LlavaMultiModalProjector(config)
-
-    def get_vision_tower(self) -> Optional[CLIPVisionTower]:
-        return self.vision_tower
-
-# ============================================================================
 # Top-Level Model: The Causal LM Wrapper
 # ============================================================================
 class LlavaLlamaForCausalLM(LlamaForCausalLM):
     """
     LLaVA Model for Causal Language Modeling.
-    Wraps LlavaLlamaModel and adds the LM head and multi-modal fusion logic.
+    Inherits from LlamaForCausalLM and adds vision capabilities via decoration.
     """
     config_class = LlavaConfig
 
     def __init__(self, config: LlavaConfig):
-        # We don't call super().__init__ because it would create a standard LlamaModel.
-        # Instead, we perform manual initialization to use LlavaLlamaModel.
-        # This is the most stable pattern for QLoRA and weight loading.
-        super(LlamaForCausalLM, self).__init__(config)
+        # We call the standard LlamaForCausalLM constructor.
+        # This correctly initializes self.model (LlamaModel) and self.lm_head.
+        super().__init__(config)
         
-        self.model = LlavaLlamaModel(config)
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # Attach multi-modal components directly to the existing self.model (LlamaModel).
+        # We use delay_load=True to avoid recursive from_pretrained calls during 4-bit init.
+        if not hasattr(self.model, "vision_tower"):
+            self.model.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=True, args=config)
+        
+        if not hasattr(self.model, "mm_projector"):
+            self.model.mm_projector = LlavaMultiModalProjector(config)
 
-        # Initialize weights and apply final processing
+        # Standard HF post-initialization (weight init, etc.)
         self.post_init()
         
-        # Load external projector weights if specified
+        # Optional: Load standalone projector weights
         self._check_and_load_projector(config)
 
     def _check_and_load_projector(self, config: LlavaConfig) -> None:
@@ -99,7 +82,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
         if not projector_path:
             return
 
-        logger.info(f"Loading projector weights from: {projector_path}")
+        logger.info(f"Attempting to load projector weights from: {projector_path}")
         try:
             if not os.path.exists(projector_path):
                 resolved_path = None
@@ -116,7 +99,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
                 return
 
             state_dict = torch.load(projector_path, map_location="cpu")
-            # Map keys to the projector module
+            # Map keys to the projector module, handling common LLaVA prefixes
             cleaned_state_dict = {
                 k.split("mm_projector.")[-1]: v for k, v in state_dict.items() if "mm_projector" in k
             } or state_dict
@@ -126,17 +109,21 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
                 logger.warning(f"Projector load: missing keys {missing}")
             
             self.model.mm_projector.to(dtype=self.dtype)
-            logger.info("Projector loaded successfully.")
+            logger.info("Projector weights loaded and aligned successfully.")
             
         except Exception as e:
             logger.error(f"Failed to load projector: {e}")
             raise e
 
-    def get_model(self) -> LlavaLlamaModel:
+    def get_model(self) -> LlamaModel:
+        """Returns the inner model."""
         return self.model
 
     def get_vision_tower(self) -> Optional[CLIPVisionTower]:
-        return self.model.get_vision_tower()
+        """Returns the vision tower component attached to the model."""
+        if hasattr(self.model, "vision_tower"):
+            return self.model.vision_tower
+        return None
 
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
@@ -153,7 +140,12 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
 
     def encode_images(self, images: torch.FloatTensor) -> torch.FloatTensor:
         """Encodes images through vision tower and projector."""
-        image_features = self.model.vision_tower(images)
+        # Ensure vision tower is loaded (safety for delayed loading)
+        vision_tower = self.get_vision_tower()
+        if vision_tower is None:
+            raise RuntimeError("Model initialized without a Vision Tower.")
+            
+        image_features = vision_tower(images)
         image_features = self.model.mm_projector(image_features)
         return image_features
 
@@ -179,7 +171,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
             images = pixel_values
 
         if inputs_embeds is None:
-            # 1. Base Text Embeddings
+            # 1. Base Text Embeddings from the standard LlamaModel
             inputs_embeds = self.model.embed_tokens(input_ids)
 
             # 2. Multi-modal Fusion
@@ -188,8 +180,9 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
                 batch_size, seq_len, _ = inputs_embeds.shape
                 num_patches = image_features.shape[1]
                 
-                # Check for contiguous placeholders
-                expected_num_patches = self.model.vision_tower.num_patches if self.model.vision_tower else num_patches
+                # Dynamic check for expected number of patches
+                vision_tower = self.get_vision_tower()
+                expected_num_patches = vision_tower.num_patches if vision_tower else num_patches
                 
                 new_inputs_embeds = []
                 for i in range(batch_size):
@@ -226,6 +219,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
                 
                 inputs_embeds = torch.stack(new_inputs_embeds, dim=0)
 
+        # 3. Call standard LlamaForCausalLM forward with fused embeddings
         return super().forward(
             input_ids=None,
             attention_mask=attention_mask,
