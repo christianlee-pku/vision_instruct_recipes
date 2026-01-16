@@ -46,116 +46,113 @@ class LlavaConfig(LlamaConfig):
         super().__init__(**kwargs)
 
 # ============================================================================
-# Top-Level Model: The Causal LM Wrapper (Standard HF Pattern)
+# Inner Model: LLM Backbone + Vision Tower + Projector
+# ============================================================================
+class LlavaLlamaModel(LlamaModel):
+    """
+    Core LLaVA model that extends LlamaModel with a Vision Tower and Projector.
+    """
+    def __init__(self, config: LlavaConfig):
+        super(LlavaLlamaModel, self).__init__(config)
+        
+        # Initialize multi-modal components
+        self.vision_tower = None
+        if hasattr(config, "vision_tower") and config.vision_tower:
+            self.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=False, args=config)
+            
+        self.mm_projector = LlavaMultiModalProjector(config)
+
+    def get_vision_tower(self) -> Optional[CLIPVisionTower]:
+        return self.vision_tower
+
+# ============================================================================
+# Top-Level Model: The Causal LM Wrapper
 # ============================================================================
 class LlavaLlamaForCausalLM(LlamaForCausalLM):
     """
-    LLaVA (Large Language-and-Vision Assistant) Model.
-    Inherits from LlamaForCausalLM and adds vision capabilities.
+    LLaVA Model for Causal Language Modeling.
+    Wraps LlavaLlamaModel and adds the LM head and multi-modal fusion logic.
     """
     config_class = LlavaConfig
 
     def __init__(self, config: LlavaConfig):
-        """
-        Initializes the LLaVA model.
-        """
-        # We call the parent constructor which sets up self.model (LlamaModel) and self.lm_head
-        super(LlavaLlamaForCausalLM, self).__init__(config)
+        # We don't call super().__init__ because it would create a standard LlamaModel.
+        # Instead, we perform manual initialization to use LlavaLlamaModel.
+        # This is the most stable pattern for QLoRA and weight loading.
+        super(LlamaForCausalLM, self).__init__(config)
         
-        # Key improvement: We no longer override self.model = LlavaLlamaModel(config).
-        # Instead, we dynamically mount the vision components on the existing self.model (LlamaModel).
-        # This ensures that bitsandbytes still sees the standard LlamaModel structure during initialization.
-        if not hasattr(self.model, "vision_tower"):
-            self.model.vision_tower = None
-            if hasattr(config, "vision_tower") and config.vision_tower:
-                self.model.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=False, args=config)
-        
-        if not hasattr(self.model, "mm_projector"):
-            self.model.mm_projector = LlavaMultiModalProjector(config)
+        self.model = LlavaLlamaModel(config)
+        self.vocab_size = config.vocab_size
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
         
-        # Check for Projector Initialization (Robustness Fix)
+        # Load external projector weights if specified
         self._check_and_load_projector(config)
 
     def _check_and_load_projector(self, config: LlavaConfig) -> None:
         """
-        Checks if the projector needs to be loaded from an external file or HF Hub.
+        Checks and loads projector weights from a local file or HF Hub.
         """
         projector_path = getattr(config, "pretrain_mm_mlp_adapter", None)
-        if projector_path:
-            logger.info(f"Attempting to load projector weights from: {projector_path}")
-            try:
-                if not os.path.exists(projector_path):
-                    resolved_path = None
-                    for filename in ["mm_projector.bin", "pytorch_model.bin", "adapter_model.bin"]:
-                        try:
-                            resolved_path = cached_file(projector_path, filename)
-                            if resolved_path:
-                                logger.info(f"Resolved remote projector file: {filename}")
-                                break
-                        except EnvironmentError:
-                            continue
-                    
-                    if resolved_path:
-                        projector_path = resolved_path
-                    else:
-                        logger.warning(f"Projector path '{projector_path}' could not be resolved.")
+        if not projector_path:
+            return
 
-                projector_weights = torch.load(projector_path, map_location="cpu")
-                
-                new_state_dict = {}
-                for k, v in projector_weights.items():
-                    # Handle different weight saving formats
-                    if "mm_projector" in k:
-                        key_suffix = k.split("mm_projector.")[-1]
-                        new_state_dict[key_suffix] = v
-                    else:
-                        new_state_dict[k] = v
-                        
-                # Key: Access via self.model.mm_projector
-                missing, unexpected = self.model.mm_projector.load_state_dict(new_state_dict, strict=False)
-                if missing:
-                    logger.warning(f"Missing keys when loading projector: {missing}")
-                
-                logger.info("Projector weights loaded successfully.")
-                self.model.mm_projector.to(dtype=self.dtype)
-                
-            except Exception as e:
-                logger.error(f"Failed to load projector: {e}")
-                raise e
+        logger.info(f"Loading projector weights from: {projector_path}")
+        try:
+            if not os.path.exists(projector_path):
+                resolved_path = None
+                for filename in ["mm_projector.bin", "pytorch_model.bin", "adapter_model.bin"]:
+                    try:
+                        resolved_path = cached_file(projector_path, filename)
+                        if resolved_path: break
+                    except EnvironmentError:
+                        continue
+                projector_path = resolved_path
 
-    def get_model(self):
-        """Returns the inner model."""
+            if not projector_path:
+                logger.warning(f"Could not resolve projector path: {config.pretrain_mm_mlp_adapter}")
+                return
+
+            state_dict = torch.load(projector_path, map_location="cpu")
+            # Map keys to the projector module
+            cleaned_state_dict = {
+                k.split("mm_projector.")[-1]: v for k, v in state_dict.items() if "mm_projector" in k
+            } or state_dict
+            
+            missing, unexpected = self.model.mm_projector.load_state_dict(cleaned_state_dict, strict=False)
+            if missing:
+                logger.warning(f"Projector load: missing keys {missing}")
+            
+            self.model.mm_projector.to(dtype=self.dtype)
+            logger.info("Projector loaded successfully.")
+            
+        except Exception as e:
+            logger.error(f"Failed to load projector: {e}")
+            raise e
+
+    def get_model(self) -> LlavaLlamaModel:
         return self.model
 
     def get_vision_tower(self) -> Optional[CLIPVisionTower]:
-        """Returns the vision tower component."""
-        if hasattr(self.model, "vision_tower"):
-            return self.model.vision_tower
-        return None
+        return self.model.get_vision_tower()
 
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ) -> Dict[str, Any]:
-        """Standard HF prepare_inputs_for_generation with multi-modal support."""
+        """Supports multi-modal generation by preserving pixel_values."""
         images = kwargs.get("images", None)
         pixel_values = kwargs.get("pixel_values", None)
         _inputs = super().prepare_inputs_for_generation(
             input_ids, past_key_values=past_key_values, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs
         )
-        if images is not None:
-            _inputs['images'] = images
-        if pixel_values is not None:
-            _inputs['pixel_values'] = pixel_values
+        if images is not None: _inputs['images'] = images
+        if pixel_values is not None: _inputs['pixel_values'] = pixel_values
         return _inputs
 
     def encode_images(self, images: torch.FloatTensor) -> torch.FloatTensor:
-        """
-        Passes raw images through the vision tower and projector.
-        """
-        # Access via self.model
+        """Encodes images through vision tower and projector."""
         image_features = self.model.vision_tower(images)
         image_features = self.model.mm_projector(image_features)
         return image_features
@@ -176,71 +173,55 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         """
-        Standard forward pass, but performs fusion of text and image embeddings.
+        Multi-modal forward pass. Fuses visual features into text embeddings.
         """
         if images is None and pixel_values is not None:
             images = pixel_values
 
         if inputs_embeds is None:
-            # 1. Get Text Embeddings
-            inputs_embeds = self.get_model().embed_tokens(input_ids)
+            # 1. Base Text Embeddings
+            inputs_embeds = self.model.embed_tokens(input_ids)
 
-            # 2. Inject Image Features (Fusion)
-            # Only fuse if images exist and we are in the prefill stage (no KV cache)
+            # 2. Multi-modal Fusion
             if images is not None and input_ids is not None and past_key_values is None:
                 image_features = self.encode_images(images)
-                            
                 batch_size, seq_len, _ = inputs_embeds.shape
                 num_patches = image_features.shape[1]
                 
-                # Verify patch count against vision tower config
-                if hasattr(self.model, "vision_tower") and self.model.vision_tower is not None:
-                    expected_num_patches = self.model.vision_tower.num_patches
-                    if num_patches != expected_num_patches:
-                         logger.warning(f"Image features length {num_patches} != expected {expected_num_patches}. Check Preprocessing.")
-                else:
-                    expected_num_patches = num_patches
-
+                # Check for contiguous placeholders
+                expected_num_patches = self.model.vision_tower.num_patches if self.model.vision_tower else num_patches
+                
                 new_inputs_embeds = []
                 for i in range(batch_size):
                     cur_input_ids = input_ids[i]
                     cur_inputs_embeds = inputs_embeds[i]
                     cur_image_features = image_features[i]
                     
-                    # Locate placeholders (PAD tokens)
                     indices = (cur_input_ids == self.config.pad_token_id).nonzero(as_tuple=True)[0]
                     
                     if len(indices) >= num_patches:
-                        # Robust search for the contiguous block of image tokens
+                        # Vectorized search for contiguous block
                         n = expected_num_patches
                         limit = len(indices) - n + 1
-                        
-                        upper = indices[n-1:]
-                        lower = indices[:limit]
-                        diffs = upper - lower
-                        matches = (diffs == (n - 1)).nonzero(as_tuple=True)[0]
+                        upper, lower = indices[n-1:], indices[:limit]
+                        matches = (upper - lower == (n - 1)).nonzero(as_tuple=True)[0]
                         
                         if len(matches) > 0:
                             start_idx = indices[matches[0]]
-                            
                             prefix = cur_inputs_embeds[:start_idx]
                             suffix = cur_inputs_embeds[start_idx + num_patches:]
-                            
-                            # Surgery: Replace text embeddings at placeholder indices with image features
                             fused = torch.cat([prefix, cur_image_features, suffix], dim=0)
                             
-                            # Preservation of sequence length for label/mask alignment
-                            if fused.shape[0] > seq_len:
-                                fused = fused[:seq_len]
-                            elif fused.shape[0] < seq_len:
+                            # Align sequence length
+                            if fused.shape[0] > seq_len: fused = fused[:seq_len]
+                            elif fused.shape[0] < seq_len: 
                                 fused = torch.cat([fused, cur_inputs_embeds[fused.shape[0]:]], dim=0)
-                                
                             new_inputs_embeds.append(fused)
                         else:
-                             logger.warning(f"Sample {i}: Contiguous PAD block of length {n} not found. Skipping fusion.")
+                             logger.warning(f"Sample {i}: Contiguous image block not found.")
                              new_inputs_embeds.append(cur_inputs_embeds)
                     else:
-                        logger.warning(f"Sample {i}: Insufficient PAD tokens ({len(indices)}) for {num_patches} patches.")
+                        logger.warning(f"Sample {i}: Insufficient PAD tokens.")
                         new_inputs_embeds.append(cur_inputs_embeds)
                 
                 inputs_embeds = torch.stack(new_inputs_embeds, dim=0)
