@@ -12,6 +12,9 @@ class CLIPVisionTower(nn.Module):
         self.select_layer = getattr(args, "mm_vision_select_layer", -2)
         self.select_feature = getattr(args, "mm_vision_select_feature", "patch")
 
+        # Load processor immediately as it is often needed for dataset setup
+        self._image_processor = CLIPImageProcessor.from_pretrained(self.vision_tower_name)
+
         if not delay_load:
             self.load_model()
         elif getattr(args, "unfreeze_mm_vision_tower", False):
@@ -20,7 +23,8 @@ class CLIPVisionTower(nn.Module):
             self.cfg_only = CLIPVisionConfig.from_pretrained(self.vision_tower_name)
 
     def load_model(self):
-        self.image_processor = CLIPImageProcessor.from_pretrained(self.vision_tower_name)
+        if self.is_loaded:
+            return
         self.vision_model = CLIPVisionModel.from_pretrained(self.vision_tower_name, use_safetensors=True)
         self.vision_model.requires_grad_(False) # Default freeze
         self.is_loaded = True
@@ -80,3 +84,7 @@ class CLIPVisionTower(nn.Module):
             return patch_grid + 1
         else:
             raise ValueError(f"Unknown select_feature: {self.select_feature}")
+
+    @property
+    def image_processor(self):
+        return self._image_processor
