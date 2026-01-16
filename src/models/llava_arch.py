@@ -14,6 +14,7 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Arguments to be filtered out before passing to base Llama init
 LORA_ARGUMENTS = [
     "lora_r", 
     "lora_alpha", 
@@ -21,6 +22,20 @@ LORA_ARGUMENTS = [
     "lora_target_modules", 
     "lora_modules_to_save", 
     "lora_bias"
+]
+
+LLAVA_SPECIFIC_ARGS = [
+    "vision_tower",
+    "mm_vision_select_layer",
+    "mm_vision_select_feature",
+    "mm_hidden_size",
+    "unfreeze_mm_vision_tower",
+    "freeze_vision_tower",
+    "pretrain_mm_mlp_adapter",
+    "load_in_4bit",
+    "load_in_8bit",
+    "bnb_4bit_use_double_quant",
+    "bnb_4bit_quant_type"
 ]
 
 class LlavaConfig(LlamaConfig):
@@ -45,114 +60,37 @@ class LlavaConfig(LlamaConfig):
         super().__init__(**kwargs)
 
 # ============================================================================
-# Mixins for Multi-Modal Functionality
+# Multi-Modal Components Logic
 # ============================================================================
 
 class LlavaMetaModel:
-    def __init__(self, config):
-        super(LlavaMetaModel, self).__init__(config)
-        
-        if hasattr(config, "vision_tower") and config.vision_tower:
+    """Mixin to add vision tower and projector to a model."""
+    def initialize_vision_modules(self, config: LlavaConfig):
+        if not hasattr(self, "vision_tower") or self.vision_tower is None:
             self.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=True, args=config)
+        
+        if not hasattr(self, "mm_projector") or self.mm_projector is None:
             self.mm_projector = LlavaMultiModalProjector(config)
 
-    def get_vision_tower(self):
-        return getattr(self, 'vision_tower', None)
-
-class LlavaMetaForCausalLM:
-    def get_vision_tower(self):
-        return self.get_model().get_vision_tower()
-
-    def encode_images(self, images):
-        image_features = self.get_model().get_vision_tower()(images)
-        image_features = self.get_model().mm_projector(image_features)
-        return image_features
-
-    def prepare_inputs_labels_for_multimodal(
-        self, input_ids, attention_mask, past_key_values, labels, images
-    ):
-        vision_tower = self.get_vision_tower()
-        if vision_tower is None or images is None or input_ids.shape[1] == 1:
-            if past_key_values is not None and images is not None and input_ids.shape[1] == 1:
-                attention_mask = torch.ones((attention_mask.shape[0], past_key_values[-1][-1].shape[-2] + 1), dtype=attention_mask.dtype, device=attention_mask.device)
-            return input_ids, attention_mask, past_key_values, None, labels
-
-        image_features = self.encode_images(images)
-
-        new_input_embeds = []
-        new_labels = [] if labels is not None else None
-        
-        for batch_idx, cur_input_ids in enumerate(input_ids):
-            num_patches = image_features.shape[1]
-            if (cur_input_ids == self.config.pad_token_id).sum() == 0:
-                # No image tokens, just use text
-                cur_input_embeds = self.get_model().embed_tokens(cur_input_ids)
-                new_input_embeds.append(cur_input_embeds)
-                if labels is not None:
-                    new_labels.append(labels[batch_idx])
-                continue
-
-            # Found image placeholders
-            indices = (cur_input_ids == self.config.pad_token_id).nonzero(as_tuple=True)[0]
-            
-            # Use the robust vectorized search we implemented earlier
-            n = num_patches
-            limit = len(indices) - n + 1
-            if limit > 0:
-                upper, lower = indices[n-1:], indices[:limit]
-                matches = (upper - lower == (n - 1)).nonzero(as_tuple=True)[0]
-                if len(matches) > 0:
-                    start_idx = indices[matches[0]]
-                    cur_input_embeds = self.get_model().embed_tokens(cur_input_ids)
-                    
-                    prefix = cur_input_embeds[:start_idx]
-                    suffix = cur_input_embeds[start_idx + n:]
-                    
-                    fused = torch.cat([prefix, image_features[batch_idx], suffix], dim=0)
-                    
-                    # Align sequence length
-                    if fused.shape[0] > cur_input_ids.shape[0]:
-                        fused = fused[:cur_input_ids.shape[0]]
-                    elif fused.shape[0] < cur_input_ids.shape[0]:
-                        fused = torch.cat([fused, cur_input_embeds[fused.shape[0]:]], dim=0)
-                    
-                    new_input_embeds.append(fused)
-                    if labels is not None:
-                        new_labels.append(labels[batch_idx])
-                else:
-                    logger.warning(f"Batch {batch_idx}: contiguous block not found")
-                    new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids))
-                    if labels is not None: new_labels.append(labels[batch_idx])
-            else:
-                logger.warning(f"Batch {batch_idx}: not enough pad tokens")
-                new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids))
-                if labels is not None: new_labels.append(labels[batch_idx])
-
-        new_input_embeds = torch.stack(new_input_embeds, dim=0)
-        if labels is not None:
-            new_labels = torch.stack(new_labels, dim=0)
-
-        return None, attention_mask, past_key_values, new_input_embeds, new_labels
-
 # ============================================================================
-# Model Implementation with Mixins
+# Implementation Classes
 # ============================================================================
 
 class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
     def __init__(self, config: LlamaConfig):
         super(LlavaLlamaModel, self).__init__(config)
 
-class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
+class LlavaLlamaForCausalLM(LlamaForCausalLM):
     config_class = LlavaConfig
 
-    def __init__(self, config):
-        # We must call LlamaPreTrainedModel.__init__ directly to skip LlamaForCausalLM.__init__ 
-        # which would instantiate a standard LlamaModel.
-        # The parent of LlamaForCausalLM is LlamaPreTrainedModel.
-        # Using super(LlamaForCausalLM, self) correctly bypasses LlamaForCausalLM.__init__.
+    def __init__(self, config: LlavaConfig, **kwargs):
+        # We must call LlamaPreTrainedModel.__init__ directly to avoid LlamaForCausalLM's 
+        # default LlamaModel instantiation.
         super(LlamaForCausalLM, self).__init__(config)
         
         self.model = LlavaLlamaModel(config)
+        self.model.initialize_vision_modules(config)
+        
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
@@ -161,32 +99,46 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         
         self._check_and_load_projector(config)
 
-    def _check_and_load_projector(self, config):
+    def _check_and_load_projector(self, config: LlavaConfig) -> None:
         projector_path = getattr(config, "pretrain_mm_mlp_adapter", None)
-        if projector_path:
-            logger.info(f"Loading projector from {projector_path}")
-            try:
-                if not os.path.exists(projector_path):
-                    for filename in ["mm_projector.bin", "pytorch_model.bin", "adapter_model.bin"]:
-                        try:
-                            resolved = cached_file(projector_path, filename)
-                            if resolved:
-                                projector_path = resolved
-                                break
-                        except: continue
-                
-                if os.path.exists(projector_path):
-                    weights = torch.load(projector_path, map_location="cpu")
-                    cleaned = {k.split("mm_projector.")[-1]: v for k, v in weights.items() if "mm_projector" in k} or weights
-                    self.model.mm_projector.load_state_dict(cleaned, strict=False)
-                    self.model.mm_projector.to(dtype=self.dtype)
-                    logger.info("Projector weights loaded successfully.")
-            except Exception as e:
-                logger.error(f"Projector load failed: {e}")
-                raise e
+        if not projector_path:
+            return
 
-    def get_model(self):
+        logger.info(f"Loading projector from: {projector_path}")
+        try:
+            if not os.path.exists(projector_path):
+                for filename in ["mm_projector.bin", "pytorch_model.bin"]:
+                    try:
+                        resolved = cached_file(projector_path, filename)
+                        if resolved:
+                            projector_path = resolved
+                            break
+                    except: continue
+            
+            if os.path.exists(projector_path):
+                state_dict = torch.load(projector_path, map_location="cpu")
+                cleaned_state_dict = {
+                    k.split("mm_projector.")[-1]: v for k, v in state_dict.items() if "mm_projector" in k
+                } or state_dict
+                self.model.mm_projector.load_state_dict(cleaned_state_dict, strict=False)
+                self.model.mm_projector.to(dtype=self.dtype)
+                logger.info("Projector weights loaded successfully.")
+        except Exception as e:
+            logger.error(f"Projector load failed: {e}")
+
+    def get_model(self) -> LlavaLlamaModel:
         return self.model
+
+    def get_vision_tower(self) -> Optional[CLIPVisionTower]:
+        return self.model.vision_tower
+
+    def encode_images(self, images: torch.FloatTensor) -> torch.FloatTensor:
+        vision_tower = self.get_vision_tower()
+        if vision_tower is None:
+            raise RuntimeError("Vision Tower not initialized.")
+        image_features = vision_tower(images)
+        image_features = self.model.mm_projector(image_features)
+        return image_features
 
     def forward(
         self,
@@ -203,24 +155,55 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         pixel_values: Optional[torch.FloatTensor] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        
+        if images is None and pixel_values is not None:
+            images = pixel_values
 
         if inputs_embeds is None:
-            (
-                input_ids,
-                attention_mask,
-                past_key_values,
-                inputs_embeds,
-                labels
-            ) = self.prepare_inputs_labels_for_multimodal(
-                input_ids,
-                attention_mask,
-                past_key_values,
-                labels,
-                images if images is not None else pixel_values
-            )
+            # 1. Get Text Embeddings
+            inputs_embeds = self.model.embed_tokens(input_ids)
+
+            # 2. Multi-modal Fusion
+            if images is not None and input_ids is not None and past_key_values is None:
+                image_features = self.encode_images(images)
+                batch_size, seq_len, _ = inputs_embeds.shape
+                num_patches = image_features.shape[1]
+                
+                vision_tower = self.get_vision_tower()
+                n = vision_tower.num_patches if vision_tower else num_patches
+
+                new_inputs_embeds = []
+                for i in range(batch_size):
+                    cur_input_ids = input_ids[i]
+                    cur_inputs_embeds = inputs_embeds[i]
+                    
+                    indices = (cur_input_ids == self.config.pad_token_id).nonzero(as_tuple=True)[0]
+                    
+                    if len(indices) >= n:
+                        # Vectorized search for contiguous block
+                        limit = len(indices) - n + 1
+                        upper, lower = indices[n-1:], indices[:limit]
+                        matches = (upper - lower == (n - 1)).nonzero(as_tuple=True)[0]
+                        
+                        if len(matches) > 0:
+                            start_idx = indices[matches[0]]
+                            prefix = cur_inputs_embeds[:start_idx]
+                            suffix = cur_inputs_embeds[start_idx + n:]
+                            fused = torch.cat([prefix, image_features[i], suffix], dim=0)
+                            
+                            if fused.shape[0] > seq_len: fused = fused[:seq_len]
+                            elif fused.shape[0] < seq_len: 
+                                fused = torch.cat([fused, cur_inputs_embeds[fused.shape[0]:]], dim=0)
+                            new_inputs_embeds.append(fused)
+                        else:
+                             new_inputs_embeds.append(cur_inputs_embeds)
+                    else:
+                        new_inputs_embeds.append(cur_inputs_embeds)
+                
+                inputs_embeds = torch.stack(new_inputs_embeds, dim=0)
 
         return super().forward(
-            input_ids=input_ids,
+            input_ids=None,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
@@ -245,17 +228,20 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         return _inputs
 
 # ============================================================================
-# Factory
+# Factory Function for Hydra
 # ============================================================================
 
 def LlavaModel(model_name_or_path: str, **kwargs):
-    use_qlora = kwargs.pop("use_qlora", False)
-    for k in LORA_ARGUMENTS + ["freeze_vision_tower", "unfreeze_mm_vision_tower"]:
-        if k in kwargs: kwargs.pop(k)
+    # Determine quantization and PEFT state
+    use_qlora = kwargs.get("use_qlora", False)
+    load_in_4bit = kwargs.get("load_in_4bit", False)
+    load_in_8bit = kwargs.get("load_in_8bit", False)
     
+    # 1. Setup Configuration
     from transformers import AutoConfig
     base_config = AutoConfig.from_pretrained(model_name_or_path)
     
+    # Extract multi-modal parameters
     llava_params = {
         "vision_tower": kwargs.get("vision_tower"),
         "mm_vision_select_layer": kwargs.get("mm_vision_select_layer"),
@@ -269,10 +255,8 @@ def LlavaModel(model_name_or_path: str, **kwargs):
     config_dict.update({k: v for k, v in llava_params.items() if v is not None})
     llava_config = LlavaConfig.from_dict(config_dict)
     
+    # 2. Setup Quantization
     quantization_config = None
-    load_in_4bit = kwargs.get("load_in_4bit", False)
-    load_in_8bit = kwargs.get("load_in_8bit", False)
-    
     if (load_in_4bit or load_in_8bit) and torch.cuda.is_available():
         from transformers import BitsAndBytesConfig
         compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -284,9 +268,11 @@ def LlavaModel(model_name_or_path: str, **kwargs):
             bnb_4bit_quant_type=kwargs.get("bnb_4bit_quant_type", "nf4"),
         )
     
-    for k in ["bnb_4bit_use_double_quant", "bnb_4bit_quant_type", "load_in_4bit", "load_in_8bit"]:
-        if k in kwargs: kwargs.pop(k)
+    # 3. CLEAN UP: Pop all non-standard arguments to avoid TypeError in model __init__
+    for k in LORA_ARGUMENTS + LLAVA_SPECIFIC_ARGS + ["use_qlora"]:
+        kwargs.pop(k, None)
 
+    # 4. Instantiate and Load
     return LlavaLlamaForCausalLM.from_pretrained(
         model_name_or_path, 
         config=llava_config,
