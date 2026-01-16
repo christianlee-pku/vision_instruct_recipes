@@ -46,51 +46,32 @@ class LlavaConfig(LlamaConfig):
         super().__init__(**kwargs)
 
 # ============================================================================
-# Inner Model: Connects LLM Backbone + Vision Encoder + Projector
-# ============================================================================
-class LlavaLlamaModel(LlamaModel):
-    def __init__(self, config: LlavaConfig):
-        super(LlavaLlamaModel, self).__init__(config)
-        
-        # 1. Vision Encoder (The "Eye")
-        # Access: model.vision_encoder.vision_model (HF CLIP)
-        self.vision_encoder = None
-        if hasattr(config, "vision_tower"):
-            self.vision_encoder = CLIPVisionTower(config.vision_tower, delay_load=False, args=config)
-            
-        # 2. Multi-Modal Projector (The "Optic Nerve")
-        # For flexibility, but we fixed MLP
-        self.mm_projector = LlavaMultiModalProjector(config)
-
-    def get_vision_tower(self):
-        return self.vision_encoder
-
-    def get_model(self):
-        return self
-
-# ============================================================================
 # Top-Level Model: The Causal LM Wrapper (Standard HF Pattern)
 # ============================================================================
 class LlavaLlamaForCausalLM(LlamaForCausalLM):
     """
     LLaVA (Large Language-and-Vision Assistant) Model.
-    This class wraps a LlamaForCausalLM and integrates a Vision Tower and Multi-Modal Projector
-    to enable visual instruction following.
+    Inherits from LlamaForCausalLM and adds vision capabilities.
     """
     config_class = LlavaConfig
 
     def __init__(self, config: LlavaConfig):
         """
         Initializes the LLaVA model.
-        
-        Args:
-            config (LlavaConfig): The model configuration containing both LLM and multi-modal parameters.
         """
+        # We call the parent constructor which sets up self.model (LlamaModel) and self.lm_head
         super(LlavaLlamaForCausalLM, self).__init__(config)
-        # Re-init model with LlavaLlamaModel which contains Vision/Projector components
-        self.model = LlavaLlamaModel(config)
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        
+        # Key improvement: We no longer override self.model = LlavaLlamaModel(config).
+        # Instead, we dynamically mount the vision components on the existing self.model (LlamaModel).
+        # This ensures that bitsandbytes still sees the standard LlamaModel structure during initialization.
+        if not hasattr(self.model, "vision_tower"):
+            self.model.vision_tower = None
+            if hasattr(config, "vision_tower") and config.vision_tower:
+                self.model.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=False, args=config)
+        
+        if not hasattr(self.model, "mm_projector"):
+            self.model.mm_projector = LlavaMultiModalProjector(config)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -101,16 +82,11 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
     def _check_and_load_projector(self, config: LlavaConfig) -> None:
         """
         Checks if the projector needs to be loaded from an external file or HF Hub.
-        This is critical for Stage 2 fine-tuning when starting from a base LLM.
-        
-        Args:
-            config (LlavaConfig): The configuration containing the projector path.
         """
         projector_path = getattr(config, "pretrain_mm_mlp_adapter", None)
         if projector_path:
             logger.info(f"Attempting to load projector weights from: {projector_path}")
             try:
-                # 1. Handle remote HF Hub or local paths
                 if not os.path.exists(projector_path):
                     resolved_path = None
                     for filename in ["mm_projector.bin", "pytorch_model.bin", "adapter_model.bin"]:
@@ -125,43 +101,40 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
                     if resolved_path:
                         projector_path = resolved_path
                     else:
-                        logger.warning(f"Projector path '{projector_path}' is not a local file and could not be resolved on HF Hub.")
+                        logger.warning(f"Projector path '{projector_path}' could not be resolved.")
 
-                # 2. Load weights
                 projector_weights = torch.load(projector_path, map_location="cpu")
                 
-                # 3. Handle key mapping (Standardize keys relative to self.model.mm_projector)
                 new_state_dict = {}
                 for k, v in projector_weights.items():
+                    # Handle different weight saving formats
                     if "mm_projector" in k:
                         key_suffix = k.split("mm_projector.")[-1]
                         new_state_dict[key_suffix] = v
                     else:
                         new_state_dict[k] = v
                         
-                # 4. Load into model
+                # Key: Access via self.model.mm_projector
                 missing, unexpected = self.model.mm_projector.load_state_dict(new_state_dict, strict=False)
                 if missing:
                     logger.warning(f"Missing keys when loading projector: {missing}")
-                if unexpected:
-                    logger.warning(f"Unexpected keys when loading projector: {unexpected}")
-                    
-                logger.info("Projector weights loaded and aligned successfully.")
+                
+                logger.info("Projector weights loaded successfully.")
                 self.model.mm_projector.to(dtype=self.dtype)
                 
             except Exception as e:
-                logger.error(f"Critical failure loading projector from {projector_path}: {e}")
+                logger.error(f"Failed to load projector: {e}")
                 raise e
-        else:
-            logger.info("No external projector path provided. Using current initialization.")
 
-    def get_model(self) -> LlavaLlamaModel:
-        """Returns the inner multi-modal model."""
+    def get_model(self):
+        """Returns the inner model."""
         return self.model
 
     def get_vision_tower(self) -> Optional[CLIPVisionTower]:
         """Returns the vision tower component."""
-        return self.model.get_vision_tower()
+        if hasattr(self.model, "vision_tower"):
+            return self.model.vision_tower
+        return None
 
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
@@ -181,15 +154,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
     def encode_images(self, images: torch.FloatTensor) -> torch.FloatTensor:
         """
         Passes raw images through the vision tower and projector.
-        
-        Args:
-            images (torch.FloatTensor): Input image pixels of shape (B, C, H, W)
-            
-        Returns:
-            torch.FloatTensor: Aligned image features of shape (B, N_patches, Hidden_Size)
         """
-        image_features = self.get_model().get_vision_tower()(images)
-        image_features = self.get_model().mm_projector(image_features)
+        # Access via self.model
+        image_features = self.model.vision_tower(images)
+        image_features = self.model.mm_projector(image_features)
         return image_features
 
     def forward(
@@ -226,9 +194,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
                 num_patches = image_features.shape[1]
                 
                 # Verify patch count against vision tower config
-                vision_tower = self.get_model().get_vision_tower()
-                if vision_tower:
-                    expected_num_patches = vision_tower.num_patches
+                if hasattr(self.model, "vision_tower") and self.model.vision_tower is not None:
+                    expected_num_patches = self.model.vision_tower.num_patches
                     if num_patches != expected_num_patches:
                          logger.warning(f"Image features length {num_patches} != expected {expected_num_patches}. Check Preprocessing.")
                 else:
