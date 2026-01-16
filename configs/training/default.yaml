@@ -1,0 +1,14 @@
+# Default Training Config
+output_dir: "./checkpoints"
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+learning_rate: 2e-4
+num_train_epochs: 1
+logging_steps: 10
+save_steps: 500
+eval_strategy: "steps"
+eval_steps: 500
+bf16: true
+tf32: true
+gradient_checkpointing: true
+report_to: "wandb"

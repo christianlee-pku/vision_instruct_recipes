@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hydra/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VS Code
+.vscode/
+
+# IntelliJ
+.idea/
+
+# Mac
+.DS_Store
+
+# Data
+/data/
+*.json
+*.jpg
+*.png
+*.jpeg
+
+# Models
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# WandB
+wandb/
+
+# GEMINI
+.gemini/
+GEMINI.md
+
+# specs
+specs/
+.specify/

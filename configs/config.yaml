@@ -1,0 +1,21 @@
+defaults:
+  - _self_
+  - model: default
+  - data: default
+  - training: default
+  - experiment: null
+
+# Experiment name
+experiment_name: "llava_tuning"
+
+# WandB Configuration
+wandb:
+  project: "vision-instruct-recipes"
+  entity: null # set to your username or team if needed
+  run_name: null # defaults to experiment_name if null
+
+# Seed for reproducibility
+seed: 42
+
+# Distributed Training
+local_rank: -1

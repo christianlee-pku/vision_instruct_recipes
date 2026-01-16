@@ -1,0 +1,44 @@
+# @package _global_
+defaults:
+  - override /model: default
+  - override /data: default
+  - override /training: default
+
+experiment_name: "cloud_scale_tpu_lora"
+
+model:
+  # TPU (XLA) doesn't support bitsandbytes 4-bit. We use bf16 LoRA instead.
+  use_qlora: true
+  load_in_4bit: false
+  load_in_8bit: false
+  
+  lora_r: 128
+  lora_alpha: 256
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  lora_modules_to_save: ["mm_projector"]
+  freeze_vision_tower: true
+
+data:
+  data_path: "data/coco/llava_instruct_150k.json"
+
+training:
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 2
+  learning_rate: 2e-5
+  num_train_epochs: 3
+  
+  # TPU Optimization
+  bf16: true
+  tf32: false
+  
+  gradient_checkpointing: true
+  report_to: "wandb"
+  output_dir: "./checkpoints/cloud_scale_tpu"
+  logging_steps: 10
+  save_steps: 500
+  eval_strategy: "steps"
+  eval_steps: 1000
+  
+  # No DeepSpeed on TPU (usually handled via XLA/FSDP directly)
+  deepspeed: null

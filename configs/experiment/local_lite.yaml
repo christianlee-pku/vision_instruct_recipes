@@ -1,0 +1,32 @@
+# @package _global_
+defaults:
+  - override /model: default
+  - override /data: default
+  - override /training: default
+
+experiment_name: "local_lite_debug"
+
+model:
+  use_qlora: false
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"] # LLaVA usually targets all
+  freeze_vision_tower: true
+
+data:
+  data_path: "data/coco/llava_instruct_subset.json"
+
+training:
+  per_device_train_batch_size: 1 # Small batch size for 24GB
+  gradient_accumulation_steps: 8
+  num_train_epochs: 1
+  learning_rate: 2e-4
+  gradient_checkpointing: true
+  bf16: false
+  tf32: false
+  report_to: "none" # Disable wandb for local debug initially
+  output_dir: "./checkpoints/local_lite"
+  logging_steps: 1
+  eval_strategy: "no"
+  max_steps: 1

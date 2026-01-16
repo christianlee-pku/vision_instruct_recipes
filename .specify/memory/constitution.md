@@ -1,50 +1,48 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# Vision Instruct Recipes Constitution
+<!--
+Sync Impact Report:
+- Version change: 1.0.0 -> 1.1.0 (Material Expansion)
+- Refined Principle I: Emphasized "Portfolio-Ready" and engineering maturity.
+- Refined Principle II: Mandated explicit component isolation (Vision Encoder, Projector, LLM).
+- Added Principle III: Resource-Efficient Engineering (Gradient Checkpointing, Data Masking).
+- Templates requiring updates: None (Generic placeholders remain compatible).
+-->
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Industry Standard R&D & Portfolio Readiness
+Development MUST demonstrate engineering maturity and deep architectural understanding suitable for public GitHub review and potential employers. Codebase quality, documentation, and structure must mimic production-grade "Industry Standard R&D" environments rather than academic scripts.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Config-Driven & Modular Architecture
+A strict "Configuration-Driven" design pattern using YAML/Hydra is MANDATORY to decouple hyperparameters from logic. The codebase MUST explicitly isolate components: **Vision Encoder**, **Projector**, and **LLM**. Implementations must use type-hinted, fully documented Python compatible with the Hugging Face ecosystem (Trainer, PEFT/QLoRA), avoiding ad-hoc scripts.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Resource-Efficient Engineering
+Pipelines MUST mimic real-world corporate constraints for scalability and efficiency. Mandatory implementation details include **gradient checkpointing**, **4-bit quantization** (BitsAndBytes), and proper **multi-modal data masking** to prevent training on prompt tokens.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Scalable & Reproducible Structure
+Maintain strict separation: `configs/` for parameters, `src/` for modular source code, and `scripts/` for minimal entry points. Adherence to MLOps best practices (WandB tracking, deterministic execution) is required to ensure reproducibility.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+## Technology Stack & Constraints
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+**Core Frameworks**: PyTorch, Hugging Face Transformers, PEFT, BitsAndBytes (QLoRA), Hydra (Config), WandB (Logging), Gradio (UI).
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+**Architectural Components**: Mini-LLaVA (Vision Encoder + Projector + LLM).
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+**Hardware Target**: Consumer GPUs (e.g., NVIDIA RTX 30/40 series).
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+**Code Style**: Strict Type-hinted Python 3.x, Black/Ruff formatting, Google-style docstrings.
+
+## Development Workflow
+
+1.  **Config First**: Define experiment parameters and architectural choices in YAML/Hydra.
+2.  **Component Isolation**: Implement model components (Encoder, Projector) as distinct, testable modules in `src/`.
+3.  **Efficiency Verification**: Verify gradient checkpointing and memory usage before full training runs.
+4.  **Track & Validate**: Log all metrics to WandB; validate instruction tuning visually via Gradio.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes all other practices. Amendments require documentation, approval, and a migration plan.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+All PRs must be reviewed for "Portfolio Readiness"—code that looks amateurish or script-like will be rejected. Complexity is permitted only when it serves modularity or efficiency.
+
+**Version**: 1.1.0 | **Ratified**: 2025-12-30 | **Last Amended**: 2025-12-30

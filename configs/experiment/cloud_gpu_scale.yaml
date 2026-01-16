@@ -1,0 +1,45 @@
+# @package _global_
+defaults:
+  - override /model: default
+  - override /data: default
+  - override /training: default
+
+experiment_name: "cloud_scale_gpu_qlora"
+
+model:
+  use_qlora: true
+  load_in_4bit: true
+  load_in_8bit: false
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+  
+  lora_r: 128
+  lora_alpha: 256
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  lora_modules_to_save: ["mm_projector"]
+  freeze_vision_tower: true
+
+data:
+  data_path: "data/coco/llava_instruct_150k.json"
+
+training:
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 1
+  learning_rate: 2e-5
+  num_train_epochs: 3
+  
+  # GPU Precision
+  bf16: true
+  tf32: true
+  
+  gradient_checkpointing: true
+  report_to: "wandb"
+  output_dir: "./checkpoints/cloud_scale_gpu"
+  logging_steps: 10
+  save_steps: 500
+  eval_strategy: "steps"
+  eval_steps: 1000
+  
+  # DeepSpeed Configuration for GPU clusters
+  deepspeed: "configs/deepspeed/ds_config_zero2.json"

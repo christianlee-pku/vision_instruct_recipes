@@ -1,0 +1,22 @@
+# Default Model Config
+_target_: src.models.llava_arch.LlavaModel
+model_name_or_path: "HuggingFaceTB/SmolLM-135M"
+vision_tower: "openai/clip-vit-large-patch14-336"
+mm_vision_select_layer: -2
+mm_vision_select_feature: "patch"
+mm_hidden_size: 1024 # 1024
+freeze_vision_tower: true
+use_qlora: true
+lora_r: 64
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: ["q_proj", "v_proj"]
+lora_modules_to_save: ["mm_projector"]
+
+# Quantization
+load_in_4bit: true
+load_in_8bit: false
+bnb_4bit_quant_type: "nf4"
+bnb_4bit_use_double_quant: true
+
+pretrain_mm_mlp_adapter: null
