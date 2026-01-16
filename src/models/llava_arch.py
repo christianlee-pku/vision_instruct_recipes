@@ -32,6 +32,7 @@ class LlavaConfig(LlamaConfig):
         mm_vision_select_layer: int = -2,
         mm_vision_select_feature: str = "patch",
         mm_hidden_size: int = 1024,
+        unfreeze_mm_vision_tower: bool = False,
         pretrain_mm_mlp_adapter: Optional[str] = None,
         **kwargs,
     ):
@@ -41,6 +42,7 @@ class LlavaConfig(LlamaConfig):
         self.mm_vision_select_layer = mm_vision_select_layer
         self.mm_vision_select_feature = mm_vision_select_feature
         self.mm_hidden_size = mm_hidden_size
+        self.unfreeze_mm_vision_tower = unfreeze_mm_vision_tower
         self.pretrain_mm_mlp_adapter = pretrain_mm_mlp_adapter
         
         super().__init__(**kwargs)
@@ -242,9 +244,10 @@ def LlavaModel(model_name_or_path: str, **kwargs):
         if k in kwargs:
             kwargs.pop(k)
     
-    # Note: freeze_vision_tower is NOT in LlavaConfig, so we pop it to avoid error?
-    if "freeze_vision_tower" in kwargs:
-        kwargs.pop("freeze_vision_tower")
+    # Note: freeze_vision_tower and unfreeze_mm_vision_tower are NOT in LlamaConfig
+    for k in ["freeze_vision_tower", "unfreeze_mm_vision_tower"]:
+        if k in kwargs:
+            kwargs.pop(k)
     
     # Manually create config to ensure parameters are applied
     # This fixes the issue where from_pretrained might drop kwargs if they don't match the loaded config structure
@@ -257,6 +260,7 @@ def LlavaModel(model_name_or_path: str, **kwargs):
         "mm_vision_select_layer": kwargs.get("mm_vision_select_layer"),
         "mm_vision_select_feature": kwargs.get("mm_vision_select_feature"),
         "mm_hidden_size": kwargs.get("mm_hidden_size"),
+        "unfreeze_mm_vision_tower": kwargs.get("unfreeze_mm_vision_tower"),
         "pretrain_mm_mlp_adapter": kwargs.get("pretrain_mm_mlp_adapter"),
     }
     
