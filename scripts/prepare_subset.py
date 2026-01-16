@@ -58,7 +58,7 @@ def main():
     parser = argparse.ArgumentParser(description="Prepare a random subset of data for rapid testing.")
     parser.add_argument("--data_root", type=str, default="./data", help="Root directory containing source JSONs")
     parser.add_argument("--output_dir", type=str, default="./data/subset", help="Directory to save subset data")
-    parser.add_argument("--num_sample", type=int, default=100, help="Number of samples to keep")
+    parser.add_argument("--num_sample", type=int, default=512, help="Number of samples to keep")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--workers", type=int, default=8, help="Number of download threads")
     

@@ -1,0 +1,51 @@
+# @package _global_
+defaults:
+  - override /model: default
+  - override /data: default
+  - override /training: default
+
+experiment_name: "t4_qlora_finetune"
+
+model:
+  # T4 supports 4-bit quantization via bitsandbytes
+  use_qlora: true
+  load_in_4bit: true
+  load_in_8bit: false
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+  
+  # LoRA Config - Moderate rank to save memory
+  lora_r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  lora_modules_to_save: ["mm_projector"]
+  freeze_vision_tower: true
+
+data:
+  data_path: "data/coco/llava_instruct_150k.json"
+
+training:
+  # T4 Memory Optimization (16GB VRAM)
+  per_device_train_batch_size: 1  # Crucial: Keep small
+  gradient_accumulation_steps: 16 # Compensate for small batch size (Total effective batch = 16)
+  
+  learning_rate: 2e-4 # Standard QLoRA LR
+  num_train_epochs: 1
+  
+  # Precision for T4 (Turing architecture)
+  bf16: false     # T4 does not support bfloat16 efficiently
+  fp16: true      # Use standard float16 mixed precision
+  tf32: false     # T4 does not support TF32
+  
+  gradient_checkpointing: true # Essential for memory saving
+  
+  report_to: "wandb"
+  output_dir: "./checkpoints/t4_qlora"
+  
+  logging_steps: 5
+  save_steps: 200
+  eval_strategy: "no" # Disable eval to maximize training VRAM availability
+  
+  # Disable DeepSpeed for single-GPU T4 to save overhead
+  deepspeed: null

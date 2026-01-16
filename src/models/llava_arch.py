@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Dict, Any
 import os
 
 import torch
@@ -350,20 +350,23 @@ def LlavaModel(model_name_or_path: str, **kwargs):
                 bnb_4bit_use_double_quant=kwargs.get("bnb_4bit_use_double_quant", False),
                 bnb_4bit_quant_type=kwargs.get("bnb_4bit_quant_type", "nf4"),
             )
-            llava_config.quantization_config = quantization_config
+            # Do NOT assign the object to config.quantization_config directly as it might be serialized/accessed as dict
+            # llava_config.quantization_config = quantization_config 
 
     # Clean up kwargs that are now in config to avoid duplicates/conflicts if passed to from_pretrained
     for k in llava_params.keys():
         if k in kwargs:
             kwargs.pop(k)
             
-    # Clean up quantization args from kwargs as they are in config now (or handled)
-    for k in ["bnb_4bit_use_double_quant", "bnb_4bit_quant_type"]:
+    # Clean up quantization args from kwargs as they are handled by quantization_config
+    # Also remove load_in_4bit/8bit to avoid DeprecationWarning and conflicts
+    for k in ["bnb_4bit_use_double_quant", "bnb_4bit_quant_type", "load_in_4bit", "load_in_8bit"]:
         if k in kwargs: kwargs.pop(k)
 
     return LlavaLlamaForCausalLM.from_pretrained(
         model_name_or_path, 
         config=llava_config,
+        quantization_config=quantization_config,
         use_safetensors=True, 
         low_cpu_mem_usage=((load_in_4bit or load_in_8bit) and torch.cuda.is_available()),
         **kwargs
