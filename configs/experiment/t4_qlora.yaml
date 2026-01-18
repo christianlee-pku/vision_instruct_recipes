@@ -23,7 +23,7 @@ model:
   freeze_vision_tower: true
 
 data:
-  data_path: "data/coco/llava_instruct_150k.json"
+  data_path: "data/coco/llava_instruct_subset.json"
 
 training:
   # T4 Memory Optimization (16GB VRAM)

@@ -268,6 +268,11 @@ def LlavaModel(model_name_or_path: str, **kwargs):
             bnb_4bit_use_double_quant=kwargs.get("bnb_4bit_use_double_quant", False),
             bnb_4bit_quant_type=kwargs.get("bnb_4bit_quant_type", "nf4"),
         )
+        
+        # FIX: Ensure device_map is set. This prevents "AttributeError: 'weight' is not an nn.Module"
+        # when accelerate tries to infer device map for 4-bit models in some environments.
+        if "device_map" not in kwargs:
+            kwargs["device_map"] = {"": torch.cuda.current_device()}
     
     # CLEAN UP: Extremely critical to pop these before calling from_pretrained
     # to avoid TypeError in model __init__ or attribute errors in bitsandbytes
