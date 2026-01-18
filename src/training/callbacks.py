@@ -57,12 +57,23 @@ class SpecificLoggingCallback(TrainerCallback):
             # Calculate iter within epoch
             # state.max_steps is total steps
             # args.num_train_epochs is total epochs
-            # If these are valid, we can approximate steps_per_epoch
             iter_step = state.global_step
             if state.max_steps > 0 and args.num_train_epochs > 0:
                 steps_per_epoch = state.max_steps // args.num_train_epochs
                 if steps_per_epoch > 0:
                     iter_step = state.global_step % steps_per_epoch
+                    # If iter_step is 0 but we have done steps, it means we completed an epoch (or multiple)
+                    if iter_step == 0 and state.global_step > 0:
+                         iter_step = steps_per_epoch
+
+                    # Fallback: If global_step is 0 but we have epoch progress (e.g. gradient accumulation)
+                    # Estimate iter from epoch fraction. 
+                    # Note: steps_per_epoch is based on optimization steps (accumulated).
+                    if state.global_step == 0 and epoch > 0:
+                        frac = epoch - int(epoch)
+                        estimated = int(frac * steps_per_epoch)
+                        if estimated > 0:
+                            iter_step = estimated
 
             lr = logs.get("learning_rate", 0.0)
             loss = logs.get("loss", 0.0)
@@ -83,7 +94,7 @@ class SpecificLoggingCallback(TrainerCallback):
             
             log_entry = {
                 "mode": "train",
-                "epoch": f"{epoch:.2f}", # Keep float for precision as '1' is ambiguous
+                "epoch": int(epoch) + 1, # Show current epoch index (1-based) as integer
                 "iter": int(iter_step),
                 "lr": f"{lr:.6f}",
                 "memory": int(memory),

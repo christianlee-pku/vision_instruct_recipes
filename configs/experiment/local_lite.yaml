@@ -20,7 +20,6 @@ data:
 training:
   per_device_train_batch_size: 1 # Small batch size for 24GB
   gradient_accumulation_steps: 8
-  num_train_epochs: 1
   learning_rate: 2e-4
   gradient_checkpointing: true
   bf16: false
@@ -29,4 +28,4 @@ training:
   output_dir: "./checkpoints/local_lite"
   logging_steps: 1
   eval_strategy: "no"
-  max_steps: 1
+  num_train_epochs: 3
