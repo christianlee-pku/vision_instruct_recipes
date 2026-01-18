@@ -9,7 +9,7 @@ from src.models.llava_arch import LlavaLlamaForCausalLM
 from src.data.dataset import LazySupervisedDataset
 from src.data.collator import DataCollatorForSupervisedDataset
 from src.training.trainer import LlavaTrainer
-from src.training.callbacks import WandbImageGenerationCallback
+from src.training.callbacks import WandbImageGenerationCallback, SpecificLoggingCallback
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -155,7 +155,7 @@ def main(cfg: DictConfig):
         train_dataset, eval_dataset, collator = prepare_data(cfg, tokenizer, model)
         
         # Callbacks
-        callbacks = []
+        callbacks = [SpecificLoggingCallback()]
         if cfg.training.get("report_to") == "wandb":
             wandb_callback = WandbImageGenerationCallback(
                 tokenizer=tokenizer,
