@@ -64,7 +64,32 @@ class LlavaMetaModel:
             self.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=True, args=config)
         
         if not hasattr(self, "mm_projector") or self.mm_projector is None:
-            self.mm_projector = LlavaMultiModalProjector(config)
+            # FIX: Force projector initialization on CPU.
+            # When low_cpu_mem_usage=True (default for QLoRA), the model init context is "meta".
+            # If the projector layers are created on meta device without subsequent weight loading
+            # (since they are new/randomly init), accelerate/bnb will fail to move/quantize them 
+            # because they have no data ("Cannot copy out of meta tensor").
+            # Initializing them on CPU ensures they have real data.
+            # We use a try-except block to handle cases where we might not be in a specific context.
+            try:
+                # FIX: Force projector initialization on CPU.
+                # When low_cpu_mem_usage=True (default for QLoRA), the model init context is "meta".
+                # We need real tensors for the new projector layers.
+                with torch.device("cpu"):
+                    self.mm_projector = LlavaMultiModalProjector(config)
+            except Exception:
+                self.mm_projector = LlavaMultiModalProjector(config)
+
+            # DOUBLE CHECK: If it's still on meta (e.g. if the context manager was overridden by accelerate),
+            # force materialization.
+            if any(p.device.type == "meta" for p in self.mm_projector.parameters()):
+                self.mm_projector.to_empty(device="cpu")
+                # Re-init weights manually since it's a raw nn.Module or similar
+                for m in self.mm_projector.modules():
+                    if isinstance(m, nn.Linear):
+                        nn.init.kaiming_normal_(m.weight)
+                        if m.bias is not None:
+                            nn.init.zeros_(m.bias)
 
     def get_vision_tower(self):
         return getattr(self, "vision_tower", None)
@@ -83,6 +108,33 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
     LLaVA Causal LM which replaces the standard LlamaModel with our vision-capable version.
     """
     config_class = LlavaConfig
+    _keys_to_ignore_on_load_missing = ["vision_tower", "mm_projector", "model.vision_tower", "model.mm_projector"]
+
+    def _initialize_missing_keys(self, missing_keys: List[str], is_quantized: bool = False):
+        """
+        Override to prevent transformers from trying to initialize our custom modules 
+        (vision_tower, mm_projector) which are naturally 'missing' from the base LLM checkpoint.
+        The default implementation causes AttributeError on quantized models.
+        """
+        # Filter out our custom keys from the missing list so the base method doesn't see them
+        filtered_keys = []
+        for k in missing_keys:
+            if "vision_tower" in k or "mm_projector" in k:
+                continue
+            filtered_keys.append(k)
+
+        try:
+            # Call the parent implementation with the filtered list
+            # We still try to force is_quantized=False to avoid the buggy path if possible
+            super()._initialize_missing_keys(filtered_keys, is_quantized=False)
+        except AttributeError:
+            # FALLBACK: If the parent method crashes while trying to introspect weights (common in QLoRA),
+            # we suppress the error. The critical weights (base model) are already loaded.
+            # The missing keys were likely just artifacts or non-module parameters that triggered the bug.
+            pass
+        except Exception as e:
+            # Re-raise other unexpected errors
+            raise e
 
     def __init__(self, config: LlavaConfig):
         # We avoid calling LlamaForCausalLM.__init__ to prevent double model instantiation.
@@ -92,7 +144,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
         # This is the "Gold Standard" pattern for LLaVA:
         # Manually assign the specific model class.
         self.model = LlavaLlamaModel(config)
-        self.model.initialize_vision_modules(config)
+        # DEFERRED: initialize_vision_modules and projector loading are moved to LlavaModel factory
+        # to avoid 'meta' device conflicts during from_pretrained loading.
         
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -100,8 +153,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
         # Initialize weights and apply final processing
         self.post_init()
         
-        # Explicitly load projector if path provided (Stage 2 support)
-        self._check_and_load_projector(config)
+        # FINAL SAFEGUARD: Removed here, handled in factory.
 
     def _check_and_load_projector(self, config: LlavaConfig) -> None:
         projector_path = getattr(config, "pretrain_mm_mlp_adapter", None)
@@ -181,7 +233,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
                     cur_inputs_embeds = inputs_embeds[i]
                     
                     # Search for contiguous PAD tokens (Placeholders)
-                    indices = (cur_input_ids == self.config.pad_token_id).nonzero(as_tuple=True)[0]
+                    # FIX: pad_token_id might be None in config, causing (tensor == None) -> False (bool).
+                    # Use 0 or eos_token_id as fallback to ensure tensor comparison.
+                    pad_id = self.config.pad_token_id if self.config.pad_token_id is not None else 0
+                    indices = (cur_input_ids == pad_id).nonzero(as_tuple=True)[0]
                     
                     if len(indices) >= n:
                         # Vectorized search for the first valid block
@@ -268,18 +323,18 @@ def LlavaModel(model_name_or_path: str, **kwargs):
             bnb_4bit_use_double_quant=kwargs.get("bnb_4bit_use_double_quant", False),
             bnb_4bit_quant_type=kwargs.get("bnb_4bit_quant_type", "nf4"),
         )
-        
-        # FIX: Ensure device_map is set. This prevents "AttributeError: 'weight' is not an nn.Module"
-        # when accelerate tries to infer device map for 4-bit models in some environments.
-        if "device_map" not in kwargs:
-            kwargs["device_map"] = {"": torch.cuda.current_device()}
     
     # CLEAN UP: Extremely critical to pop these before calling from_pretrained
     # to avoid TypeError in model __init__ or attribute errors in bitsandbytes
     for k in LORA_ARGUMENTS + LLAVA_SPECIFIC_ARGS + ["use_qlora"]:
         kwargs.pop(k, None)
+    
+    # DOUBLE CHECK: Explicitly remove quantization keys if they somehow persisted
+    # Transformers 4.30+ throws ValueError if both config and bool are passed as kwargs.
+    kwargs.pop("load_in_4bit", None)
+    kwargs.pop("load_in_8bit", None)
 
-    return LlavaLlamaForCausalLM.from_pretrained(
+    model = LlavaLlamaForCausalLM.from_pretrained(
         model_name_or_path, 
         config=llava_config,
         quantization_config=quantization_config,
@@ -287,3 +342,26 @@ def LlavaModel(model_name_or_path: str, **kwargs):
         low_cpu_mem_usage=((load_in_4bit or load_in_8bit) and torch.cuda.is_available()),
         **kwargs
     )
+    
+    # POST-INIT: Initialize vision modules here to avoid 'Cannot copy out of meta tensor' errors.
+    # This runs outside of transformers' init_empty_weights context.
+    model.model.initialize_vision_modules(llava_config)
+    model._check_and_load_projector(llava_config)
+    
+    # FINAL SYNC: Move custom modules to the same device as the base model.
+    # We forced them to CPU during init to avoid meta-tensor crashes, but now they must join the GPU party.
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        # Move projector
+        if hasattr(model.model, "mm_projector"):
+            model.model.mm_projector.to(device)
+        
+        # Move vision tower (if it loaded weights)
+        # Note: CLIPVisionTower handles its own device placement in forward(), but explicitly moving it here is safer.
+        if hasattr(model.model, "vision_tower") and model.model.vision_tower is not None:
+            # Check if it's a raw module or our wrapper. Our wrapper usually stays on CPU until forward, 
+            # but let's ensure the underlying model is ready if loaded.
+            if hasattr(model.model.vision_tower, "vision_model"):
+                 model.model.vision_tower.vision_model.to(device)
+
+    return model

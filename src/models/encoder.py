@@ -25,7 +25,8 @@ class CLIPVisionTower(nn.Module):
     def load_model(self):
         if self.is_loaded:
             return
-        self.vision_model = CLIPVisionModel.from_pretrained(self.vision_tower_name, use_safetensors=True)
+        # FIX: Remove use_safetensors=True to allow loading pytorch_model.bin if safetensors is missing
+        self.vision_model = CLIPVisionModel.from_pretrained(self.vision_tower_name)
         self.vision_model.requires_grad_(False) # Default freeze
         self.is_loaded = True
 

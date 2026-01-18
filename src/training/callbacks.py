@@ -77,7 +77,8 @@ class SpecificLoggingCallback(TrainerCallback):
 
             lr = logs.get("learning_rate", 0.0)
             loss = logs.get("loss", 0.0)
-            grad_norm = 0.0 # Trainer usually doesn't pass grad_norm in logs unless specifically configured
+            # FIX: Fetch real grad_norm from logs if available
+            grad_norm = logs.get("grad_norm", 0.0)
             
             # Try to find grad_norm in logs if available (some versions do)
             # Or if we can access it from model/optimizer (difficult here)
@@ -101,7 +102,7 @@ class SpecificLoggingCallback(TrainerCallback):
                 "data_time": f"{avg_data_time:.5f}",
                 "loss": f"{loss:.5f}",
                 "total_loss": f"{loss:.5f}", # Requested "total loss" explicitly
-                "grad_norm": "N/A", # Placeholder if not found
+                "grad_norm": f"{grad_norm:.5f}",
                 "time": f"{avg_iter_time:.5f}"
             }
             
@@ -132,20 +133,10 @@ class SpecificLoggingCallback(TrainerCallback):
                 f'"data_time": {log_entry["data_time"]}',
                 f'"loss": {log_entry["loss"]}',
                 f'"total_loss": {log_entry["total_loss"]}',
-                f'"grad_norm": {log_entry["grad_norm"]}', # This one is "N/A", might need quotes or be valid json? Example has 5.29593 (number)
+                f'"grad_norm": {log_entry["grad_norm"]}', # Now using formatted number string
                 f'"time": {log_entry["time"]}'
             ])
             
-            # Fix "N/A" for grad_norm if it's string, it should be quoted.
-            # But if it is number, no quotes.
-            # If I put "N/A" (quoted) it breaks the pattern of numbers.
-            # I will just put 0.0 if N/A to keep it numeric? 
-            # Or "N/A".
-            # Let's use 0.0 for grad_norm if not found to matches style.
-            
-            if log_entry["grad_norm"] == "N/A":
-                 formatted_msg = formatted_msg.replace('"grad_norm": N/A', '"grad_norm": 0.0')
-
             logger.info(formatted_msg)
 
 class WandbImageGenerationCallback(TrainerCallback):
