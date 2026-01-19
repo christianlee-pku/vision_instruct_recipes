@@ -13,12 +13,9 @@ export WANDB_PROJECT="vision-instruct-recipes-local"
 # Ensure python path includes current directory
 export PYTHONPATH=.
 
-# Path to specific conda environment python
-PYTHON_EXEC="/usr/local/Caskroom/miniconda/base/envs/llava/bin/python"
-
 # Run training with local_lite configuration
 # We disable QLoRA and quantization by default for local CPU debugging
-$PYTHON_EXEC scripts/train.py \
+python scripts/train.py \
     experiment=local_lite \
     training.report_to="none" \
     model.use_qlora=false \

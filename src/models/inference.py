@@ -1,7 +1,7 @@
 import torch
 from PIL import Image
 from transformers import AutoTokenizer, BitsAndBytesConfig
-from src.models.llava_arch import LlavaLlamaForCausalLM, LlavaConfig
+from src.models.llava_arch import LlavaModel, LlavaConfig
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -15,30 +15,24 @@ class LlavaInference:
         model_path: str,
         adapter_path: str = None,
         load_in_4bit: bool = True,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        vision_tower_name: str = "openai/clip-vit-large-patch14-336"
     ):
         self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Quantization Config
-        quantization_config = None
-        if load_in_4bit and device == "cuda":
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-
-        # Load Model
-        logger.info(f"Loading base model from {model_path}...")
-        self.model = LlavaLlamaForCausalLM.from_pretrained(
-            model_path,
-            quantization_config=quantization_config,
-            device_map="auto" if device == "cuda" else None,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        # Load Model using the Factory to ensure correct config and initialization
+        logger.info(f"Loading LLaVA model from {model_path}...")
+        
+        self.model = LlavaModel(
+            model_name_or_path=model_path,
+            vision_tower=vision_tower_name,
+            load_in_4bit=load_in_4bit,
+            # Force device map to auto/cpu if we plan to move it later, 
+            # but LlavaModel factory handles sync.
+            # We just need to ensure arguments match what factory expects.
         )
 
         # Load Adapter if provided
