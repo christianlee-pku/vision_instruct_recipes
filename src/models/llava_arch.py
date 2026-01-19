@@ -64,27 +64,22 @@ class LlavaMetaModel:
             self.vision_tower = CLIPVisionTower(config.vision_tower, delay_load=True, args=config)
         
         if not hasattr(self, "mm_projector") or self.mm_projector is None:
-            # FIX: Force projector initialization on CPU.
-            # When low_cpu_mem_usage=True (default for QLoRA), the model init context is "meta".
-            # If the projector layers are created on meta device without subsequent weight loading
-            # (since they are new/randomly init), accelerate/bnb will fail to move/quantize them 
-            # because they have no data ("Cannot copy out of meta tensor").
-            # Initializing them on CPU ensures they have real data.
-            # We use a try-except block to handle cases where we might not be in a specific context.
+            # CPU Initialization Strategy:
+            # When `low_cpu_mem_usage=True` (active for QLoRA), transformers defaults to creating modules on the "meta" device.
+            # However, new custom modules (like mm_projector) lack pretrained weights to load, leaving them as empty meta tensors.
+            # This causes crashes when `accelerate` or `bitsandbytes` attempts to move or quantize them.
+            # We force initialization on CPU to ensure valid, materialized tensors are created immediately.
             try:
-                # FIX: Force projector initialization on CPU.
-                # When low_cpu_mem_usage=True (default for QLoRA), the model init context is "meta".
-                # We need real tensors for the new projector layers.
                 with torch.device("cpu"):
                     self.mm_projector = LlavaMultiModalProjector(config)
             except Exception:
                 self.mm_projector = LlavaMultiModalProjector(config)
 
-            # DOUBLE CHECK: If it's still on meta (e.g. if the context manager was overridden by accelerate),
-            # force materialization.
+            # Materialization Check:
+            # If the context manager was overridden (e.g., by accelerate), ensure parameters are not on meta device.
             if any(p.device.type == "meta" for p in self.mm_projector.parameters()):
                 self.mm_projector.to_empty(device="cpu")
-                # Re-init weights manually since it's a raw nn.Module or similar
+                # Re-initialize weights since `to_empty` leaves memory uninitialized.
                 for m in self.mm_projector.modules():
                     if isinstance(m, nn.Linear):
                         nn.init.kaiming_normal_(m.weight)
@@ -112,28 +107,26 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
 
     def _initialize_missing_keys(self, missing_keys: List[str], is_quantized: bool = False):
         """
-        Override to prevent transformers from trying to initialize our custom modules 
-        (vision_tower, mm_projector) which are naturally 'missing' from the base LLM checkpoint.
-        The default implementation causes AttributeError on quantized models.
+        Robust Initialization Override:
+        This method is overridden to prevent `transformers` from attempting to recursively initialize
+        custom modules (Vision Tower, Projector) that are naturally "missing" from the base LLM checkpoint.
+        
+        In quantized environments (QLoRA), the standard introspection logic can mistakenly interpret 
+        parameter tensors (like `weight`) as submodules, leading to `AttributeError: 'weight' is not an nn.Module`.
+        We filter known keys and suppress specific errors to ensure safe loading.
         """
         # Filter out our custom keys from the missing list so the base method doesn't see them
-        filtered_keys = []
-        for k in missing_keys:
-            if "vision_tower" in k or "mm_projector" in k:
-                continue
-            filtered_keys.append(k)
+        filtered_keys = [k for k in missing_keys if "vision_tower" not in k and "mm_projector" not in k]
 
         try:
-            # Call the parent implementation with the filtered list
-            # We still try to force is_quantized=False to avoid the buggy path if possible
+            # Call parent with filtered keys and force standard initialization path (is_quantized=False)
+            # to avoid fragile introspection logic in `transformers`.
             super()._initialize_missing_keys(filtered_keys, is_quantized=False)
         except AttributeError:
-            # FALLBACK: If the parent method crashes while trying to introspect weights (common in QLoRA),
-            # we suppress the error. The critical weights (base model) are already loaded.
-            # The missing keys were likely just artifacts or non-module parameters that triggered the bug.
+            # Fallback: If introspection still fails on artifacts, suppress the error.
+            # Critical weights are already loaded; these are usually non-critical mismatches.
             pass
         except Exception as e:
-            # Re-raise other unexpected errors
             raise e
 
     def __init__(self, config: LlavaConfig):
@@ -152,8 +145,24 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def finalize_initialization(self, config: LlavaConfig):
+        """
+        Completes model setup by initializing vision modules and synchronizing devices.
+        This acts as a safe landing zone after the base model is loaded, ensuring custom
+        components are materialized on the correct device (avoiding meta-tensor errors).
+        """
+        self.model.initialize_vision_modules(config)
+        self._check_and_load_projector(config)
         
-        # FINAL SAFEGUARD: Removed here, handled in factory.
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            if hasattr(self.model, "mm_projector"):
+                self.model.mm_projector.to(device)
+            
+            vision_tower = getattr(self.model, "vision_tower", None)
+            if vision_tower and hasattr(vision_tower, "vision_model"):
+                 vision_tower.vision_model.to(device)
 
     def _check_and_load_projector(self, config: LlavaConfig) -> None:
         projector_path = getattr(config, "pretrain_mm_mlp_adapter", None)
@@ -196,6 +205,66 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
         image_features = self.model.mm_projector(image_features)
         return image_features
 
+    def _merge_multimodal_embeddings(
+        self, 
+        input_ids: torch.LongTensor, 
+        inputs_embeds: torch.FloatTensor, 
+        image_features: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        """
+        Merges image features into text embeddings by replacing <image> placeholders.
+        """
+        batch_size, seq_len, _ = inputs_embeds.shape
+        num_patches = image_features.shape[1]
+        
+        # Determine number of patches to insert
+        vision_tower = self.get_vision_tower()
+        n = vision_tower.num_patches if vision_tower else num_patches
+
+        new_inputs_embeds = []
+        
+        # Robustly determine pad_token_id
+        pad_id = self.config.pad_token_id if self.config.pad_token_id is not None else 0
+
+        for i in range(batch_size):
+            cur_input_ids = input_ids[i]
+            cur_inputs_embeds = inputs_embeds[i]
+            
+            # Find indices of contiguous PAD tokens (placeholders for images)
+            indices = (cur_input_ids == pad_id).nonzero(as_tuple=True)[0]
+            
+            # Check if we have enough placeholders to insert the image
+            if len(indices) >= n:
+                # Optimized search for the placeholder block
+                limit = len(indices) - n + 1
+                upper, lower = indices[n-1:], indices[:limit]
+                # Check for contiguous block: (upper - lower) should be (n-1)
+                matches = (upper - lower == (n - 1)).nonzero(as_tuple=True)[0]
+                
+                if len(matches) > 0:
+                    start_idx = indices[matches[0]]
+                    
+                    # Split and Insert
+                    prefix = cur_inputs_embeds[:start_idx]
+                    suffix = cur_inputs_embeds[start_idx + n:]
+                    fused = torch.cat([prefix, image_features[i], suffix], dim=0)
+                    
+                    # Truncate or Pad to match original sequence length
+                    if fused.shape[0] > seq_len: 
+                        fused = fused[:seq_len]
+                    elif fused.shape[0] < seq_len: 
+                        fused = torch.cat([fused, cur_inputs_embeds[fused.shape[0]:]], dim=0)
+                    
+                    new_inputs_embeds.append(fused)
+                else:
+                    # No valid placeholder block found
+                    new_inputs_embeds.append(cur_inputs_embeds)
+            else:
+                # Not enough placeholders
+                new_inputs_embeds.append(cur_inputs_embeds)
+        
+        return torch.stack(new_inputs_embeds, dim=0)
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -222,45 +291,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
             # 2. Multi-modal Fusion (Late Fusion)
             if images is not None and input_ids is not None and past_key_values is None:
                 image_features = self.encode_images(images)
-                batch_size, seq_len, _ = inputs_embeds.shape
-                num_patches = image_features.shape[1]
-                
-                n = self.get_vision_tower().num_patches if self.get_vision_tower() else num_patches
-
-                new_inputs_embeds = []
-                for i in range(batch_size):
-                    cur_input_ids = input_ids[i]
-                    cur_inputs_embeds = inputs_embeds[i]
-                    
-                    # Search for contiguous PAD tokens (Placeholders)
-                    # FIX: pad_token_id might be None in config, causing (tensor == None) -> False (bool).
-                    # Use 0 or eos_token_id as fallback to ensure tensor comparison.
-                    pad_id = self.config.pad_token_id if self.config.pad_token_id is not None else 0
-                    indices = (cur_input_ids == pad_id).nonzero(as_tuple=True)[0]
-                    
-                    if len(indices) >= n:
-                        # Vectorized search for the first valid block
-                        limit = len(indices) - n + 1
-                        upper, lower = indices[n-1:], indices[:limit]
-                        matches = (upper - lower == (n - 1)).nonzero(as_tuple=True)[0]
-                        
-                        if len(matches) > 0:
-                            start_idx = indices[matches[0]]
-                            prefix = cur_inputs_embeds[:start_idx]
-                            suffix = cur_inputs_embeds[start_idx + n:]
-                            fused = torch.cat([prefix, image_features[i], suffix], dim=0)
-                            
-                            # Align sequence length for consistency
-                            if fused.shape[0] > seq_len: fused = fused[:seq_len]
-                            elif fused.shape[0] < seq_len: 
-                                fused = torch.cat([fused, cur_inputs_embeds[fused.shape[0]:]], dim=0)
-                            new_inputs_embeds.append(fused)
-                        else:
-                             new_inputs_embeds.append(cur_inputs_embeds)
-                    else:
-                        new_inputs_embeds.append(cur_inputs_embeds)
-                
-                inputs_embeds = torch.stack(new_inputs_embeds, dim=0)
+                inputs_embeds = self._merge_multimodal_embeddings(input_ids, inputs_embeds, image_features)
 
         # 3. Call LlamaForCausalLM forward with injected embeddings
         return super().forward(
@@ -324,13 +355,11 @@ def LlavaModel(model_name_or_path: str, **kwargs):
             bnb_4bit_quant_type=kwargs.get("bnb_4bit_quant_type", "nf4"),
         )
     
-    # CLEAN UP: Extremely critical to pop these before calling from_pretrained
-    # to avoid TypeError in model __init__ or attribute errors in bitsandbytes
+    # Argument Cleanup: Remove LLaVA-specific args before passing to LlamaForCausalLM to avoid TypeError.
     for k in LORA_ARGUMENTS + LLAVA_SPECIFIC_ARGS + ["use_qlora"]:
         kwargs.pop(k, None)
     
-    # DOUBLE CHECK: Explicitly remove quantization keys if they somehow persisted
-    # Transformers 4.30+ throws ValueError if both config and bool are passed as kwargs.
+    # Quantization Cleanup: Explicitly remove boolean flags to prevent conflict with quantization_config object.
     kwargs.pop("load_in_4bit", None)
     kwargs.pop("load_in_8bit", None)
 
@@ -343,25 +372,9 @@ def LlavaModel(model_name_or_path: str, **kwargs):
         **kwargs
     )
     
-    # POST-INIT: Initialize vision modules here to avoid 'Cannot copy out of meta tensor' errors.
-    # This runs outside of transformers' init_empty_weights context.
-    model.model.initialize_vision_modules(llava_config)
-    model._check_and_load_projector(llava_config)
-    
-    # FINAL SYNC: Move custom modules to the same device as the base model.
-    # We forced them to CPU during init to avoid meta-tensor crashes, but now they must join the GPU party.
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        # Move projector
-        if hasattr(model.model, "mm_projector"):
-            model.model.mm_projector.to(device)
-        
-        # Move vision tower (if it loaded weights)
-        # Note: CLIPVisionTower handles its own device placement in forward(), but explicitly moving it here is safer.
-        if hasattr(model.model, "vision_tower") and model.model.vision_tower is not None:
-            # Check if it's a raw module or our wrapper. Our wrapper usually stays on CPU until forward, 
-            # but let's ensure the underlying model is ready if loaded.
-            if hasattr(model.model.vision_tower, "vision_model"):
-                 model.model.vision_tower.vision_model.to(device)
+    # Finalize Model Setup:
+    # Initialize vision modules and sync devices. This is deferred to here to ensure
+    # safe initialization outside of the transformers loading context.
+    model.finalize_initialization(llava_config)
 
     return model

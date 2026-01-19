@@ -4,7 +4,8 @@ import torch
 from src.models.inference import LlavaInference
 from src.utils.logging import get_logger
 
-logger = get_logger(__name__)
+# Use "demo" as logger name to clearly indicate inference/demo phase
+logger = get_logger("demo")
 
 def main():
     parser = argparse.ArgumentParser(description="LLaVA Gradio Demo")

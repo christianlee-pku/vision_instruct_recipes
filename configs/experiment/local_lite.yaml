@@ -12,6 +12,8 @@ model:
   lora_alpha: 32
   lora_dropout: 0.05
   lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"] # LLaVA usually targets all
+  # Use a repository that provides safetensors to bypass torch.load security restrictions on older torch versions
+  vision_tower: "openai/clip-vit-large-patch14-336"
   freeze_vision_tower: true
 
 data:
@@ -27,5 +29,5 @@ training:
   report_to: "none" # Disable wandb for local debug initially
   output_dir: "./checkpoints/local_lite"
   logging_steps: 1
-  eval_strategy: "no"
+  evaluation_strategy: "no"
   num_train_epochs: 3

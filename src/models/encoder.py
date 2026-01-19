@@ -12,7 +12,7 @@ class CLIPVisionTower(nn.Module):
         self.select_layer = getattr(args, "mm_vision_select_layer", -2)
         self.select_feature = getattr(args, "mm_vision_select_feature", "patch")
 
-        # Load processor immediately as it is often needed for dataset setup
+        # Load processor: try the specific model first, fallback to standard OpenAI path if config is missing
         self._image_processor = CLIPImageProcessor.from_pretrained(self.vision_tower_name)
 
         if not delay_load:

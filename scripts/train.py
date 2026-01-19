@@ -12,7 +12,8 @@ from src.training.trainer import LlavaTrainer
 from src.training.callbacks import WandbImageGenerationCallback, SpecificLoggingCallback
 from src.utils.logging import get_logger
 
-logger = get_logger(__name__)
+# Use "train" as logger name to clearly indicate training phase in logs
+logger = get_logger("train")
 
 def validate_config(cfg: DictConfig):
     """Validates critical configuration parameters to fail fast."""

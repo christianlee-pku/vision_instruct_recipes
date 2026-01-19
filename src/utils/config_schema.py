@@ -35,6 +35,7 @@ class TrainingConfig:
     evaluation_strategy: str = "steps"
     eval_steps: int = 500
     bf16: bool = True
+    fp16: bool = False
     tf32: bool = True
     gradient_checkpointing: bool = True
     report_to: str = "wandb"
