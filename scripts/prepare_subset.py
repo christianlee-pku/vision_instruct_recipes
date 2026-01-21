@@ -110,7 +110,7 @@ def main():
     print(f"Successfully downloaded {success_count}/{len(download_tasks)} images.")
     
     # 5. Save LLaVA Subset
-    llava_subset_path = output_dir / "llava_instruct_subset.json"
+    llava_subset_path = output_dir / "llava_instruct_150k.json"
     with open(llava_subset_path, 'w') as f:
         json.dump(llava_subset, f, indent=2)
     print(f"Saved LLaVA subset to {llava_subset_path}")

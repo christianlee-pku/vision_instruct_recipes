@@ -1,6 +1,6 @@
 # Hydra settings
 run:
-  dir: outputs/${experiment_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  dir: outputs/${experiment_name}/${model.vision_tower}_${model.model_name_or_path}_bs${training.per_device_train_batch_size}_lr${training.learning_rate}_${now:%m%d%H%M}
 sweep:
-  dir: multirun/${experiment_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  dir: multirun/${experiment_name}/${model.vision_tower}_${model.model_name_or_path}_bs${training.per_device_train_batch_size}_lr${training.learning_rate}_${now:%m%d%H%M}
   subdir: ${hydra.job.num}

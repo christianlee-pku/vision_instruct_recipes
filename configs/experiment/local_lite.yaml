@@ -17,7 +17,7 @@ model:
   freeze_vision_tower: true
 
 data:
-  data_path: "data/coco/llava_instruct_subset.json"
+  data_path: "data/coco/llava_instruct_150k.json"
 
 training:
   per_device_train_batch_size: 1 # Small batch size for 24GB

@@ -1,5 +1,5 @@
 # Default Data Config
-data_path: "data/coco/llava_instruct_subset.json"
+data_path: "data/coco/llava_instruct_150k.json"
 image_folder: "data/coco/images"
 image_processor_name: "openai/clip-vit-large-patch14-336"
 lazy_preprocess: true

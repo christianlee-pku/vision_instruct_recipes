@@ -6,11 +6,10 @@ This guide explains how to run high-performance training on GPU instances (e.g.,
 
 Ensure you have installed the GPU-optimized dependencies. This is critical for 4-bit quantization support.
 
-```bash
-# First, remove any conflicting CPU-only packages
-pip uninstall -y torch torchvision torchaudio bitsandbytes accelerate transformers peft
+**Note**: Ensure you have the correct CUDA version installed for your GPU to match the PyTorch and BitsAndBytes requirements.
 
-# Install the GPU stack (Tested on CUDA 12.4 / Tesla T4)
+```bash
+# Install the GPU stack
 pip install -r requirements_gpu.txt
 ```
 
@@ -18,13 +17,13 @@ pip install -r requirements_gpu.txt
 
 We provide two main profiles for GPU training:
 
-1.  **`t4_qlora` (Single T4/Consumer GPU)**:
+1.  **`t4_qlora` (Consumer GPU / Low VRAM)**:
     *   Optimized for 16GB VRAM.
     *   Uses 4-bit quantization (`load_in_4bit=true`).
     *   Batch size 1 with Gradient Accumulation 16.
     *   FP16 precision.
 
-2.  **`cloud_scale` (Multi-GPU A100)**:
+2.  **`cloud_gpu_scale` (Multi-GPU Cluster)**:
     *   Uses DeepSpeed ZeRO-2.
     *   BF16 precision (if supported).
     *   Larger batch sizes.
@@ -40,27 +39,40 @@ python scripts/download_models.py
 
 ## Running Training
 
-### Single GPU (e.g., Colab T4)
+### Single GPU or Custom Count
 
-Use the provided helper script `scripts/train_cloud.sh`. It automatically detects the pre-downloaded models and launches the training with `accelerate`.
+Use the provided helper script `scripts/train_cloud.sh`. It handles model caching and launching.
+
+**Usage:**
+```bash
+bash scripts/train_cloud.sh [experiment_name] [num_gpus]
+```
+
+**Examples:**
 
 ```bash
-chmod +x scripts/train_cloud.sh
-./scripts/train_cloud.sh
+# 1. Default: Run 'cloud_gpu_scale' on ALL available GPUs
+bash scripts/train_cloud.sh
+
+# 2. Run on exactly 4 GPUs
+bash scripts/train_cloud.sh cloud_gpu_scale 4
+
+# 3. Run single-GPU T4 profile
+bash scripts/train_cloud.sh t4_qlora 1
 ```
 
 **What this script does:**
 *   Checks for `accelerate`.
 *   Sets up WandB logging (online mode).
 *   Points the training script to the local `./model_cache/` to avoid network issues.
-*   Launches `scripts/train.py` with the `t4_qlora` experiment profile.
+*   Launches `scripts/train.py` with the specified experiment and GPU count.
 
-### Multi-GPU (DeepSpeed)
+### Manual Launch (Advanced)
 
-To run on a cluster, use `accelerate launch` directly with the cloud scale config:
+To run on a cluster without the helper script, use `accelerate launch` directly:
 
 ```bash
-accelerate launch scripts/train.py experiment=cloud_scale
+accelerate launch scripts/train.py experiment=cloud_gpu_scale
 ```
 
 Ensure you have configured accelerate (`accelerate config`) to use DeepSpeed before running this.

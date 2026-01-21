@@ -23,8 +23,7 @@ python scripts/train.py \
     model.load_in_8bit=false \
     training.bf16=false \
     training.fp16=false \
-    training.tf32=false \
-    hydra.run.dir="outputs/local/$(date +%Y-%m-%d_%H-%M-%S)"
+    training.tf32=false
 
-echo "Local Training Finished. Check outputs/local/ for logs."
+echo "Local Training Finished. Check outputs/ for logs."
 

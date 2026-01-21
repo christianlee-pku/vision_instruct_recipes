@@ -66,7 +66,6 @@ We use **Late Fusion**: Image features are inserted into the text sequence at sp
     *   **For Cloud/GPU Users (Recommended)**:
         ```bash
         # Installs torch 2.5.1+cu124, bitsandbytes 0.45.0, transformers 4.47.1
-        pip uninstall -y torch torchvision torchaudio bitsandbytes accelerate transformers peft
         pip install -r requirements_gpu.txt
         ```
     
@@ -128,11 +127,14 @@ Best for full training runs on clusters (e.g., 8x A100).
 *   **Features**: DeepSpeed ZeRO-2, BF16 precision, Higher Batch Size.
 *   **Command**:
     ```bash
-    # Using the helper script
+    # Using the helper script (auto-detects all GPUs)
     bash scripts/train_cloud.sh
     
+    # Or specify GPU count (e.g., 4 GPUs)
+    bash scripts/train_cloud.sh cloud_gpu_scale 4
+    
     # Or manually
-    accelerate launch scripts/train.py experiment=cloud_scale
+    accelerate launch scripts/train.py experiment=cloud_gpu_scale
     ```
 
 ### QLoRA & Quantization
@@ -149,7 +151,7 @@ Once trained, interact with your model using the Gradio web UI.
 
 ```bash
 python scripts/demo.py \
-    --base_model meta-llama/Meta-Llama-3-8B-Instruct \
+    --base_model HuggingFaceTB/SmolLM-135M \
     --adapter ./checkpoints/local_lite/checkpoint-final
 ```
 
