@@ -176,14 +176,5 @@ python scripts/train.py experiment=local_lite training.learning_rate=5e-5
 
 ## Troubleshooting
 
-*   **`AttributeError: 'weight' is not an nn.Module`**:
-    *   *Cause*: Transformers issue with 4-bit loading.
-    *   *Fix*: Ensure you are using the provided `requirements_gpu.txt` versions. Our code handles this via `_initialize_missing_keys` override.
+For a comprehensive list of common issues and fixes, please refer to our **[Troubleshooting Guide](troubleshooting.md)**.
 
-*   **`NotImplementedError: Cannot copy out of meta tensor`**:
-    *   *Cause*: Initializing custom modules on the "meta" device without weights.
-    *   *Fix*: Our code uses `finalize_initialization` to safely create modules on CPU/GPU after base loading.
-
-*   **Local training fails with `ValueError: torch.load`**:
-    *   *Cause*: Old PyTorch versions (local env) blocking insecure pickle files.
-    *   *Fix*: Use `train_local.sh` which points to a safetensors-compatible model mirror (`jeromeku/clip-vit-large-patch14-336_safe`).

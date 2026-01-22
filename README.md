@@ -9,6 +9,7 @@ A production-ready pipeline for training **LLaVA (Large Language and Vision Assi
 
 ## 📰 News
 
+- **[2026-01-21]** 📘 **Documentation Expansion**: Added comprehensive troubleshooting guides, API references, and developer contribution guidelines.
 - **[2026-01-20]** 🚀 **v0.2.0 Release**: 
     - **Refined Output Structure**: Training outputs are now organized by experiment, model, and hyperparameters (e.g., `outputs/cloud_gpu_scale/openai_clip...`) for easier tracking.
     - **Enhanced Cloud Script**: `scripts/train_cloud.sh` now supports optional arguments for experiment names and custom GPU counts (e.g., `bash scripts/train_cloud.sh cloud_gpu_scale 4`).
@@ -52,6 +53,8 @@ For detailed guides, please refer to the `docs/` directory:
 - **[Training on GPU](docs/train_gpu.md)**: Best practices for cloud-scale and local GPU training.
 - **[Training on CPU](docs/train_cpu.md)**: Guide for debugging and testing on CPU.
 - **[Inference & Demo](docs/inference.md)**: How to run the Gradio demo and inference scripts.
+- **[API Reference](docs/api_reference.md)**: High-level overview of modules and classes.
+- **[Troubleshooting](docs/troubleshooting.md)**: Solutions for common errors.
 
 ## 🛠️ Installation
 

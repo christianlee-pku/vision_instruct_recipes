@@ -79,6 +79,5 @@ Ensure you have configured accelerate (`accelerate config`) to use DeepSpeed bef
 
 ## Troubleshooting
 
-*   **`AttributeError: 'weight' is not an nn.Module`**: This is a known issue with QLoRA loading in `transformers`. Our codebase includes a specific fix in `src/models/llava_arch.py` (`_initialize_missing_keys` override). If you see this, ensure you are using the latest code from the `main` branch.
-*   **`NotImplementedError: Cannot copy out of meta tensor`**: This happens if the custom projector modules are initialized on the "meta" device. Our `LlavaModel` factory handles this by safely initializing them on CPU first.
-*   **`OSError: Can't load model`**: Run `python scripts/download_models.py` again to ensure all weights (especially `safetensors` or `bin` files) are correctly cached.
+Please see the **[Troubleshooting Guide](troubleshooting.md)** for solutions to common GPU training errors (OOM, QLoRA loading, etc.).
+
